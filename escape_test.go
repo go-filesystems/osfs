@@ -197,9 +197,23 @@ func TestPlantedSymlinkIsNotFollowed(t *testing.T) {
 			if err := fsys.Truncate("evil", 0); err == nil {
 				t.Error("Truncate followed the link out")
 			}
-			if err := fsys.Chmod("evil", 0o777); err == nil {
+			// The outside file is made read-only first, so that a Chmod that
+			// reached it would be SEEN: 0o777 on a file that is already
+			// writable changes nothing Windows keeps, and a nil error alone
+			// cannot tell a link that was followed from one that was not.
+			must(t, os.Chmod(secret, 0o444))
+			err := fsys.Chmod("evil", 0o666)
+			if fi, _ := os.Stat(secret); fi.Mode().Perm()&0o200 != 0 {
+				t.Error("Chmod followed the link out: the outside file became writable")
+			}
+			// On Windows, os.Root's Chmod acts on the link itself -- it opens
+			// it with FILE_FLAG_OPEN_REPARSE_POINT (go.dev/issue/71492) -- so
+			// it succeeds without leaving the tree, which the check above
+			// proves. Everywhere else it follows the link, and is refused.
+			if err == nil && runtime.GOOS != "windows" {
 				t.Error("Chmod followed the link out")
 			}
+			must(t, os.Chmod(secret, 0o644))
 			if err := fsys.Chtimes("evil", time.Unix(0, 0), time.Unix(0, 0)); err == nil {
 				t.Error("Chtimes followed the link out")
 			}
@@ -209,7 +223,7 @@ func TestPlantedSymlinkIsNotFollowed(t *testing.T) {
 				}
 			}
 			outsideIntact(t, base)
-			if fi, _ := os.Stat(secret); fi.Mode().Perm() == 0o777 || fi.ModTime().Unix() == 0 {
+			if fi, _ := os.Stat(secret); fi.ModTime().Unix() == 0 {
 				t.Error("the outside file's metadata changed")
 			}
 		})

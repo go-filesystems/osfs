@@ -272,6 +272,10 @@ func (fsys *FS) Truncate(p string, size int64) error {
 }
 
 // Chmod sets the permission bits of p (following a final in-tree link).
+//
+// On Windows a final symbolic link is changed itself rather than followed, as
+// os.Root does there (go.dev/issue/71492); either way nothing outside the
+// tree is touched.
 func (fsys *FS) Chmod(p string, perm os.FileMode) error {
 	if fsys.readOnly {
 		return readOnlyErr("chmod", p)
