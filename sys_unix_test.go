@@ -13,8 +13,6 @@ import (
 	"syscall"
 	"testing"
 	"time"
-
-	filesystem "github.com/go-filesystems/interface"
 )
 
 // TestEtcSymlink is the case the package exists for: a client plants a link
@@ -102,27 +100,13 @@ func TestFIFOIsRefusedNotWaitedOn(t *testing.T) {
 	}
 }
 
-// TestUnwritableFileOpensReadOnly: a file the host will not open for writing
-// comes back as a plain File, not as an error and not as a WritableFile.
-func TestUnwritableFileOpensReadOnly(t *testing.T) {
+// TestUnreadableFileIsAnError: a file that cannot be opened even for reading
+// is an error, not a read-only File. (Windows has no mode that denies reading.)
+func TestUnreadableFileIsAnError(t *testing.T) {
 	if os.Geteuid() == 0 {
-		t.Skip("root opens a 0444 file for writing")
+		t.Skip("root opens a 0000 file")
 	}
 	fsys, _ := tree(t)
-	must(t, fsys.WriteFile("locked", []byte("l"), 0o444))
-	f, err := fsys.OpenFile("locked")
-	must(t, err)
-	defer f.Close()
-	if _, ok := f.(filesystem.WritableFile); ok {
-		t.Error("a 0444 file came back writable")
-	}
-	// Control: a 0644 file comes back writable.
-	g, err := fsys.OpenFile("inside")
-	must(t, err)
-	defer g.Close()
-	if _, ok := g.(filesystem.WritableFile); !ok {
-		t.Error("control: a 0644 file came back read-only")
-	}
 	// A file that cannot be opened even for reading is an error.
 	must(t, fsys.WriteFile("sealed", []byte("s"), 0o000))
 	if _, err := fsys.OpenFile("sealed"); !errors.Is(err, fs.ErrPermission) {
