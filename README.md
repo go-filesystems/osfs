@@ -12,8 +12,13 @@ serves SMB, NFS, WebDAV, SFTP and S3 that way — can export a directory tree
 ```go
 fsys, err := osfs.Open("/data/photos")                // read-write
 fsys, err := osfs.Open("/data/photos", osfs.ReadOnly()) // every write refused
+fsys, err := osfs.OpenRoot(root)                      // through an *os.Root you hold; Close closes it
 total, free, err := fsys.Usage()                       // statfs of the tree
 ```
+
+`ReadFile` refuses a file above 1 GiB (`ErrTooLarge`; change it with
+`osfs.MaxReadFile(n)`), since a client that may write can truncate a sparse
+file to any size; use `OpenFile` for large files.
 
 ## Confinement
 

@@ -32,6 +32,14 @@
 // leaves the tree through such a link. Stat and ReadLink describe the link
 // itself, which is what a network client needs to resolve it on its own side.
 //
+// # Opening
+//
+// [Open] takes a path. [OpenRoot] takes an [os.Root] the caller already holds
+// and serves the tree through it, taking ownership of it: a server that
+// checks a share's path and then opens it keeps the directory it checked,
+// even if the path is swapped for a symbolic link afterwards, because the
+// kernel resolves every call against the Root's descriptor.
+//
 // # Paths
 //
 // Paths are slash-separated and relative to the root of the tree; a leading
@@ -55,6 +63,11 @@
 //     rmdir semantics and a recursive delete of a host tree is not a thing to
 //     get by accident. Neither is idempotent: a missing path is an error
 //     wrapping [io/fs.ErrNotExist].
+//   - ReadFile holds a whole file in memory, so it refuses one larger than
+//     [DefaultMaxReadFile] (1 GiB; see [MaxReadFile]) with an error wrapping
+//     [ErrTooLarge], before allocating anything: a client that may write can
+//     Truncate a sparse file to any size. It never preallocates more than
+//     1 MiB from the size a file claims; the buffer grows with what is read.
 //   - ReadFile, OpenFile, WriteFile and Truncate only ever touch regular
 //     files. They open with O_NONBLOCK on Unix and check the type of what they
 //     opened, so a FIFO in the tree is refused instead of hanging the server.

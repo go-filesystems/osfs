@@ -7,7 +7,9 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -23,6 +25,10 @@ import (
 // FS was opened with [ReadOnly].
 var ErrReadOnly = errors.New("osfs: read-only filesystem")
 
+// ErrTooLarge is wrapped by the error ReadFile returns for a file larger than
+// the limit set with [MaxReadFile] ([DefaultMaxReadFile] unless changed).
+var ErrTooLarge = errors.New("osfs: file too large to read whole")
+
 // errNotRegular is returned for a path that names something other than a
 // regular file where one is required (ReadFile, OpenFile, WriteFile,
 // Truncate): a directory, a FIFO, a device, a socket.
@@ -31,23 +37,62 @@ var errNotRegular = errors.New("not a regular file")
 // errNegative is returned for a negative offset or size.
 var errNegative = errors.New("negative offset or size")
 
-// Option configures [Open].
+// Option configures [Open] and [OpenRoot].
 type Option func(*options)
 
 type options struct {
-	readOnly bool
+	readOnly    bool
+	maxReadFile int64
+}
+
+func newOptions(opts []Option) options {
+	o := options{maxReadFile: DefaultMaxReadFile}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return o
 }
 
 // ReadOnly makes every mutating method return an error wrapping
 // [ErrReadOnly], and opens every file O_RDONLY.
 func ReadOnly() Option { return func(o *options) { o.readOnly = true } }
 
+// DefaultMaxReadFile is the largest file, in bytes, that [FS.ReadFile] reads
+// unless [MaxReadFile] says otherwise: 1 GiB.
+//
+// ReadFile holds the whole file in memory, and a client that may write can
+// make a sparse file of any size with Truncate (NFS SETATTR, SMB
+// SET_INFO): without a limit, one request makes the server read terabytes of
+// zeros into memory. Anything larger belongs to [FS.OpenFile], which reads it
+// piece by piece.
+const DefaultMaxReadFile = 1 << 30
+
+// unlimited is the limit MaxReadFile stores for "no limit": one below
+// math.MaxInt64, so that the limit plus one — the byte that proves a file
+// too large — still fits in an int64. No file is that large.
+const unlimited = math.MaxInt64 - 1
+
+// MaxReadFile sets the largest file, in bytes, that [FS.ReadFile] reads;
+// a larger one is an error wrapping [ErrTooLarge], returned before anything
+// is allocated for it. n <= 0 removes the limit — memory is then the only
+// bound, so do that only where every writer is trusted. The default is
+// [DefaultMaxReadFile].
+func MaxReadFile(n int64) Option {
+	return func(o *options) {
+		if n <= 0 || n > unlimited {
+			n = unlimited
+		}
+		o.maxReadFile = n
+	}
+}
+
 // FS is a host directory tree, confined with [os.Root]. It is safe for
 // concurrent use.
 type FS struct {
-	root     *os.Root
-	dir      string
-	readOnly bool
+	root        *os.Root
+	dir         string // "" when opened with OpenRoot
+	readOnly    bool
+	maxReadFile int64
 
 	mu    sync.Mutex
 	files map[*file]struct{} // nil once closed
@@ -65,10 +110,6 @@ var (
 // Open opens the directory dir, which must exist and be a directory, as a
 // filesystem. Nothing outside dir is reachable through the result.
 func Open(dir string, opts ...Option) (*FS, error) {
-	var o options
-	for _, opt := range opts {
-		opt(&o)
-	}
 	var root *os.Root
 	fi, err := os.Stat(dir)
 	if err == nil && !fi.IsDir() {
@@ -86,12 +127,39 @@ func Open(dir string, opts ...Option) (*FS, error) {
 	if abs, err := filepath.Abs(dir); err == nil {
 		dir = abs
 	}
+	return newFS(root, dir, opts), nil
+}
+
+// OpenRoot serves the directory r was opened on, through r itself. Every
+// call goes through r, so the tree is the one r holds: a caller that checked
+// a path and then opened it with [os.OpenRoot] keeps what it checked, even if
+// a component of that path is swapped for a symbolic link afterwards.
+//
+// On success the FS owns r: [FS.Close] closes it, and the caller must not.
+// On error r is left open and still belongs to the caller.
+//
+// An FS opened this way knows no path for its tree. Where [FS.Usage] needs
+// one it derives it from r's descriptor instead (see Usage).
+func OpenRoot(r *os.Root, opts ...Option) (*FS, error) {
+	if r == nil {
+		return nil, errors.New("osfs: OpenRoot: nil *os.Root")
+	}
+	// A Root is always a directory; this only refuses one already closed.
+	if _, err := r.Stat("."); err != nil {
+		return nil, fmt.Errorf("osfs: %w", err)
+	}
+	return newFS(r, "", opts), nil
+}
+
+func newFS(root *os.Root, dir string, opts []Option) *FS {
+	o := newOptions(opts)
 	return &FS{
-		root:     root,
-		dir:      dir,
-		readOnly: o.readOnly,
-		files:    map[*file]struct{}{},
-	}, nil
+		root:        root,
+		dir:         dir,
+		readOnly:    o.readOnly,
+		maxReadFile: o.maxReadFile,
+		files:       map[*file]struct{}{},
+	}
 }
 
 // Close closes the tree and every File obtained from it with OpenFile.
@@ -140,16 +208,35 @@ func (fsys *FS) open(p string, flag int, perm os.FileMode) (*os.File, int64, err
 	return f, fi.Size(), nil
 }
 
-// ReadFile returns the whole content of the regular file at p.
+// readFileHint caps what ReadFile preallocates from the size a file reports:
+// the size is a claim, and a sparse file claims whatever it was truncated to.
+// Beyond it the buffer grows as the bytes actually arrive.
+const readFileHint = 1 << 20
+
+// ReadFile returns the whole content of the regular file at p. A file larger
+// than the limit ([DefaultMaxReadFile], or as set with [MaxReadFile]) is an
+// error wrapping [ErrTooLarge]; so is one that grows past it while being
+// read.
 func (fsys *FS) ReadFile(p string) ([]byte, error) {
 	f, size, err := fsys.open(p, os.O_RDONLY, 0)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
+	return readAll(f, p, size, fsys.maxReadFile)
+}
+
+// readAll reads r, which claims to hold size bytes, refusing more than limit.
+func readAll(r io.Reader, p string, size, limit int64) ([]byte, error) {
+	if size > limit {
+		return nil, &fs.PathError{Op: "read", Path: p, Err: ErrTooLarge}
+	}
 	// size is only a hint: the file may grow or shrink while it is read.
-	buf := bytes.NewBuffer(make([]byte, 0, size+bytes.MinRead))
-	_, err = buf.ReadFrom(f)
+	buf := bytes.NewBuffer(make([]byte, 0, min(size, readFileHint)+bytes.MinRead))
+	_, err := buf.ReadFrom(io.LimitReader(r, limit+1))
+	if int64(buf.Len()) > limit {
+		return nil, &fs.PathError{Op: "read", Path: p, Err: ErrTooLarge}
+	}
 	return buf.Bytes(), err
 }
 
