@@ -32,7 +32,11 @@ refused rather than left to hang an open.
 
 `Filesystem`, `Opener` (positional `ReadAt`/`WriteAt` straight on the `*os.File`,
 `WritableFile` when writable), `Truncater`, `MetadataSetter`, `Symlinker`,
-`HardLinker`. Pure Go, `CGO_ENABLED=0`. Tested on Linux, macOS and Windows, and
+`HardLinker`, and `HostFile` (since v0.3.0): a file's `Read`, `Seek` and
+`SyscallConn` are its own host descriptor's, which lets a server send it with
+`sendfile(2)` -- go-filesystems/webdav does for a GET -- instead of copying it
+through user space. `Read` and `Seek` share one position per handle; `ReadAt`
+does not touch it and stays safe to call concurrently. Pure Go, `CGO_ENABLED=0`. Tested on Linux, macOS and Windows, and
 under QEMU on riscv64, loong64, ppc64le and s390x; built for the BSDs, plan9, js
 and wasip1.
 
