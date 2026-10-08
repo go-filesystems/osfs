@@ -28,8 +28,10 @@ var (
 )
 
 // HostFile says that Read, Seek and SyscallConn are this file's own
-// descriptor: see filesystem.HostFile.
-func (h *file) HostFile() {}
+// descriptor: see filesystem.HostFile. It does nothing; the one statement is
+// there because go tool cover reports a function without any as 0.0%
+// covered however often it runs, and the coverage gate reads that line.
+func (h *file) HostFile() { _ = h }
 
 // Read reads from the descriptor's position, as read(2).
 func (h *file) Read(p []byte) (int, error) { return h.f.Read(p) }
