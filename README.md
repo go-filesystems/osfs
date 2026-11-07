@@ -31,7 +31,7 @@ refused rather than left to hang an open.
 ## Capabilities
 
 `Filesystem`, `Opener` (positional `ReadAt`/`WriteAt` straight on the `*os.File`,
-`WritableFile` when writable), `Truncater`, `MetadataSetter`, `Symlinker`,
+`WritableFile` when writable), `Truncater`, `MetadataSetter`, `TimesReader` (atime, mtime, ctime and, where the host keeps one, birth time, with "not recorded" distinct from a zero time), `Symlinker`,
 `HardLinker`, and `HostFile` (since v0.3.0): a file's `Read`, `Seek` and
 `SyscallConn` are its own host descriptor's, which lets a server send it with
 `sendfile(2)` -- go-filesystems/webdav does for a GET -- instead of copying it
