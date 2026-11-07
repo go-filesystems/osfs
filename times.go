@@ -4,8 +4,6 @@
 package osfs
 
 import (
-	"time"
-
 	filesystem "github.com/go-filesystems/interface"
 )
 
@@ -35,8 +33,4 @@ func (fsys *FS) Times(p string) (filesystem.FileTimes, error) {
 		return filesystem.FileTimes{}, err
 	}
 	return hostTimes(fsys, p, fi), nil
-}
-
-func unixTS(sec, nsec int64, res time.Duration) filesystem.Timestamp {
-	return filesystem.NewTimestamp(time.Unix(sec, nsec), res)
 }

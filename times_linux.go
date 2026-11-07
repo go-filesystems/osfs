@@ -40,10 +40,14 @@ func birth(fsys *FS, p string) filesystem.Timestamp {
 	}
 	defer f.Close()
 	var stx unix.Statx_t
-	if err := unix.Statx(int(f.Fd()), "", unix.AT_EMPTY_PATH, unix.STATX_BTIME, &stx); err != nil {
-		return filesystem.Timestamp{}
-	}
-	if stx.Mask&unix.STATX_BTIME == 0 {
+	err = unix.Statx(int(f.Fd()), "", unix.AT_EMPTY_PATH, unix.STATX_BTIME, &stx)
+	return birthOf(&stx, err)
+}
+
+// birthOf is the verdict on a statx result: a failed call, or a mask without
+// STATX_BTIME (the filesystem keeps no birth time), is not recorded.
+func birthOf(stx *unix.Statx_t, err error) filesystem.Timestamp {
+	if err != nil || stx.Mask&unix.STATX_BTIME == 0 {
 		return filesystem.Timestamp{}
 	}
 	return unixTS(stx.Btime.Sec, int64(stx.Btime.Nsec), time.Nanosecond)
